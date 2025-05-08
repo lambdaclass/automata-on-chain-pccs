@@ -8,7 +8,7 @@ import {X509CRLHelper, X509CRLObj} from "../helpers/X509CRLHelper.sol";
 import {DaoBase} from "./DaoBase.sol";
 import {SigVerifyBase} from "./SigVerifyBase.sol";
 
-import {LibString} from "solady/utils/LibString.sol";
+import {LibString} from "../../lib/solady/src/utils/LibString.sol";
 
 /// @notice the schema of the attested data for PCS Certs is simply DER-encoded form of the X509
 /// @notice Certificate stored in bytes

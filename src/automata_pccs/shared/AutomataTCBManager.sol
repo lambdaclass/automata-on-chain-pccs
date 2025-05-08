@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {EnumerableSet} from "../../../lib/openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 abstract contract AutomataTCBManager {
     /// mapping (keccak256(qeid ++ pceid) => Enumerable tcbm Set)

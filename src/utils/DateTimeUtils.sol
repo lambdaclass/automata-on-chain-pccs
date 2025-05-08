@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {DateTimeLib} from "solady/utils/DateTimeLib.sol";
-import {LibString} from "solady/utils/LibString.sol";
+import {DateTimeLib} from "../../lib/solady/src/utils/DateTimeLib.sol";
+import {LibString} from "../../lib/solady/src/utils/LibString.sol";
 
 library DateTimeUtils {
     using LibString for string;

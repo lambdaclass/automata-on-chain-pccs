@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {JSONParserLib} from "solady/utils/JSONParserLib.sol";
-import {LibString} from "solady/utils/LibString.sol";
+import {JSONParserLib} from "../../lib/solady/src/utils/JSONParserLib.sol";
+import {LibString} from "../../lib/solady/src/utils/LibString.sol";
 import {DateTimeUtils} from "../utils/DateTimeUtils.sol";
 
 enum EnclaveId {

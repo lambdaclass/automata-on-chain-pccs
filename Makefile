@@ -1,148 +1,107 @@
-# Configuration
-VERIFIER ?= etherscan
-VERIFIER_URL ?= 
-WITH_STORAGE ?= true
-SIMULATED ?=
-KEYSTORE_PATH ?= keystore/dcap_prod
-PRIVATE_KEY ?=
+$(eval CHAIN_ID := $(shell rex chain-id))
+$(eval OWNER := $(shell rex address))
 
-# Required environment variables check
-check_env:
-ifdef RPC_URL
-	$(eval CHAIN_ID := $(shell cast chain-id --rpc-url $(RPC_URL)))
-	@echo "Chain ID: $(CHAIN_ID)"
-else 
-	$(error RPC_URL is not set)
-endif
+SOLC_FLAGS := --overwrite --optimize --via-ir
 
-# Get the Owner's Wallet Address
-get_owner:
-ifdef PRIVATE_KEY
-	$(eval OWNER := $(shell cast wallet address --private-key $(PRIVATE_KEY)))
-else
-	$(eval KEYSTORE_PASSWORD := $(shell read -s -p "Enter keystore password: " pwd; echo $$pwd))
-	$(eval OWNER := $(shell cast wallet address --keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD) \
-		|| (echo "Improper wallet configuration"; exit 1)))
-endif
-	@echo "\nWallet Owner: $(OWNER)"
+P256_ADDR := 0xc2b78104907F722DABAc4C69f826a522B2754De4
 
-# Deployment targets
-deploy-helpers: check_env get_owner
-	@echo "Deploying helper contracts..."
-	@OWNER=$(OWNER) \
-		forge script script/helper/DeployHelpers.s.sol:DeployHelpers \
-		--rpc-url $(RPC_URL) \
-		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)) \
-		$(if $(SIMULATED),, --broadcast) \
-		$(if $(LEGACY), --legacy) \
-		-vv
-	@echo "Helper contracts deployed"
+lib/openzeppelin:
+	git clone https://github.com/OpenZeppelin/openzeppelin-contracts lib/openzeppelin
 
-deploy-dao: check_env get_owner
-	@echo "Deploying DAO contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "Helper addresses not found. Run deploy-helpers first"; \
-		exit 1; \
-	fi
-	@OWNER=$(OWNER) \
-		forge script script/automata/DeployAutomataDao.s.sol:DeployAutomataDao \
-		--rpc-url $(RPC_URL) \
-		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD)) \
-		$(if $(SIMULATED),, --broadcast) \
-		$(if $(LEGACY), --legacy) \
-		-vv \
-		--sig "deployAll(bool)" $(WITH_STORAGE)
-	@echo "DAO contracts deployed"
+lib/solady:
+	git clone https://github.com/vectorized/solady lib/solady
 
-deploy-all: deploy-helpers deploy-dao
-	@echo "Deployment completed"
+deps: lib/openzeppelin lib/solady
+	mkdir -p deployment
 
-# Contract verification
-verify-helpers: check_env
-	@echo "Verifying helper contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "Helper addresses not found. Deploy helpers first."; \
-		exit 1; \
-	fi
-	@for contract in EnclaveIdentityHelper FmspcTcbHelper PCKHelper X509CRLHelper; do \
-		addr=$$(jq -r ".$$contract" deployment/$(CHAIN_ID).json); \
-		if [ "$$addr" != "null" ]; then \
-			forge verify-contract \
-				--rpc-url $(RPC_URL) \
-				--verifier $(VERIFIER) \
-				--watch \
-				$(if $(VERIFIER_URL),--verifier-url $(VERIFIER_URL)) \
-				$$addr \
-				src/helpers/$$contract.sol:$$contract || true; \
-		fi \
-	done
+out/AutomataDaoStorage.bin: deps
+	solc src/automata_pccs/shared/AutomataDaoStorage.sol --bin -o out/ $(SOLC_FLAGS)
 
-verify-dao: check_env
-	@echo "Verifying DAO contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "DAO addresses not found. Deploy DAOs first."; \
-		exit 1; \
-	fi
-	@for contract in AutomataDaoStorage AutomataPcsDao AutomataPckDao AutomataEnclaveIdentityDao AutomataFmspcTcbDao; do \
-		addr=$$(jq -r ".$$contract" deployment/$(CHAIN_ID).json); \
-		if [ "$$addr" != "null" ]; then \
-			if [ "$$contract" != "AutomataDaoStorage" ]; then \
-				forge verify-contract \
-					--rpc-url $(RPC_URL) \
-					--verifier $(VERIFIER) \
-					--watch \
-					$(if $(VERIFIER_URL),--verifier-url $(VERIFIER_URL)) \
-					$$addr \
-					src/automata_pccs/$$contract.sol:$$contract || true; \
-			else \
-				forge verify-contract \
-					--rpc-url $(RPC_URL) \
-					--verifier $(VERIFIER) \
-					--watch \
-					$(if $(VERIFIER_URL),--verifier-url $(VERIFIER_URL)) \
-					$$addr \
-					src/automata_pccs/shared/AutomataDaoStorage.sol:AutomataDaoStorage || true; \
-			fi \
-		fi \
-	done
+out/AutomataFmspcTcbDao.bin: deps
+	solc src/automata_pccs/AutomataFmspcTcbDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-verify-all: verify-helpers verify-dao
-	@echo "Verification completed"
+out/AutomataEnclaveIdentityDao.bin: deps
+	solc src/automata_pccs/AutomataEnclaveIdentityDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-# Utility targets
-clean:
-	forge clean
+out/AutomataPcsDao.bin: deps
+	solc src/automata_pccs/AutomataPcsDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-# Help target
-help:
-	@echo "Available targets:"
-	@echo "  deploy-helpers      Deploy helper contracts"
-	@echo "  deploy-dao          Deploy DAO contracts"
-	@echo "  deploy-all          Deploy all contracts"
-	@echo "  verify-helpers      Verify helper contracts"
-	@echo "  verify-dao          Verify DAO contracts"
-	@echo "  verify-all          Verify all contracts"
-	@echo "  clean               Remove build artifacts"
-	@echo ""
-	@echo "Wallet environment variables: (you only need to set one)"
-	@echo "  PRIVATE_KEY         Private key for wallet"
-	@echo "  KEYSTORE_PATH       Path to keystore directory"
-	@echo ""
-	@echo "Required environment variables:"
-	@echo "  RPC_URL             RPC URL for the target network"
-	@echo ""
-	@echo "Optional environment variables:"
-	@echo "  VERIFIER            Contract verifier (default: etherscan)"
-	@echo "  VERIFIER_URL        Custom verifier API URL"
-	@echo "  ETHERSCAN_API_KEY   API key for contract verification"
-	@echo "  WITH_STORAGE        Deploy with storage (default: true)"
-	@echo "  SIMULATED           Simulate deployment (default: false)"
-	@echo ""
-	@echo "Example usage:"
-	@echo "  make deploy-all RPC_URL=xxx"
-	@echo "  make verify-all RPC_URL=xxx ETHERSCAN_API_KEY=xxx"
-	@echo "  make deploy-dao PRIVATE_KEY=xxx RPC_URL=xxx SIMULATED=true"
+out/AutomataPckDao.bin: deps
+	solc src/automata_pccs/AutomataPckDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-.PHONY: check_env clean help deploy-% verify-%
+out/EnclaveIdentityHelper.bin: deps
+	solc src/helpers/EnclaveIdentityHelper.sol --bin -o out/ $(SOLC_FLAGS)
+
+out/FmspcTcbHelper.bin: deps
+	solc src/helpers/FmspcTcbHelper.sol --bin -o out/ $(SOLC_FLAGS)
+
+out/PCKHelper.bin: deps
+	solc src/helpers/PCKHelper.sol --bin -o out/ $(SOLC_FLAGS)
+
+out/X509CRLHelper.bin: deps
+	solc src/helpers/X509CRLHelper.sol --bin -o out/ $(SOLC_FLAGS)
+
+deploy-helpers: out/EnclaveIdentityHelper.bin out/FmspcTcbHelper.bin out/PCKHelper.bin out/X509CRLHelper.bin
+	rex deploy --print-address $(shell cat out/EnclaveIdentityHelper.bin) 0 $(PRIVATE_KEY) > deployment/EnclaveIdentityHelper
+	rex deploy --print-address $(shell cat out/FmspcTcbHelper.bin) 0 $(PRIVATE_KEY) > deployment/FmspcTcbHelper
+	rex deploy --print-address $(shell cat out/PCKHelper.bin) 0 $(PRIVATE_KEY) > deployment/PCKHelper
+	rex deploy --print-address $(shell cat out/X509CRLHelper.bin) 0 $(PRIVATE_KEY) > deployment/X509CRLHelper
+
+deploy-storage: out/AutomataDaoStorage.bin deploy-helpers
+	rex deploy --print-address $(shell cat out/AutomataDaoStorage.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address)" $(OWNER) > deployment/AutomataDaoStorage
+
+deploy-pcs: out/AutomataPcsDao.bin deploy-storage deploy-helpers
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	rex deploy --print-address $(shell cat out/AutomataPcsDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address)" $(STORAGE_ADDR) $(P256_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataPcsDao
+
+deploy-pck: out/AutomataPckDao.bin deploy-storage deploy-helpers deploy-pcs
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	rex deploy --print-address $(shell cat out/AutomataPckDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataPckDao
+
+deploy-id-dao: out/AutomataEnclaveIdentityDao.bin deploy-storage deploy-pcs deploy-helpers
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	$(eval ENCLAVE_HELPER_ADDR := $(shell cat deployment/EnclaveIdentityHelper))
+	rex deploy --print-address $(shell cat out/AutomataEnclaveIdentityDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(ENCLAVE_HELPER_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataEnclaveIdentityDao
+
+deploy-fmspc-tcb-dao: out/AutomataFmspcTcbDao.bin deploy-storage deploy-pcs deploy-helpers
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	$(eval FMSPC_TCB_HELPER_ADDR := $(shell cat deployment/FmspcTcbHelper))
+	rex deploy --print-address $(shell cat out/AutomataFmspcTcbDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(FMSPC_TCB_HELPER_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataFmspcTcbDao
+
+deploy-and-configure: deploy-storage deploy-pcs deploy-pck deploy-id-dao deploy-fmspc-tcb-dao
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	$(eval PCK_ADDR := $(shell cat deployment/AutomataPckDao))
+	$(eval ENCLAVE_ID_ADDR := $(shell cat deployment/AutomataEnclaveIdentityDao))
+	$(eval FMSPC_TCB_ADDR := $(shell cat deployment/AutomataFmspcTcbDao))
+	rex send $(STORAGE_ADDR) 0 $(PRIVATE_KEY) -- "grantDao(address)" $(PCS_ADDR)
+	rex send $(STORAGE_ADDR) 0 $(PRIVATE_KEY) -- "grantDao(address)" $(PCK_ADDR)
+	rex send $(STORAGE_ADDR) 0 $(PRIVATE_KEY) -- "grantDao(address)" $(ENCLAVE_ID_ADDR)
+	rex send $(STORAGE_ADDR) 0 $(PRIVATE_KEY) -- "grantDao(address)" $(FMSPC_TCB_ADDR)
+
+deploy: deploy-and-configure
+
+.PHONY: deploy-*

@@ -5,8 +5,8 @@ import {CA} from "../Common.sol";
 import {PCKHelper, X509CertObj} from "../helpers/PCKHelper.sol";
 import {X509CRLHelper, X509CRLObj} from "../helpers/X509CRLHelper.sol";
 
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {LibString} from "solady/utils/LibString.sol";
+import {EnumerableSet} from "../../lib/openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {LibString} from "../../lib/solady/src/utils/LibString.sol";
 
 import {PcsDao} from "./PcsDao.sol";
 import {DaoBase} from "./DaoBase.sol";

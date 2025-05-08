@@ -1,21 +1,3 @@
-# Compiler files
-cache/
 out/
-
-# Ignores development broadcast logs
-broadcast/**/31337/
-broadcast/**/run-*.json
-broadcast/**/dry-run/
-!broadcast/**/*-latest.json
-
-# Dotenv file
-.env
-
-# Ignore development deployment files
-deployment/31337.json
-
-# Misc
-**/.DS_Store
-**/node_modules/
-**/keystore/
-**/.vscode
+lib/
+deployment/

@@ -4,8 +4,8 @@ pragma solidity ^0.8.0;
 import {IDaoAttestationResolver} from "../../interfaces/IDaoAttestationResolver.sol";
 import {AutomataTCBManager, EnumerableSet} from "./AutomataTCBManager.sol";
 
-import {Ownable} from "solady/auth/Ownable.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {Ownable} from "../../../lib/solady/src/auth/Ownable.sol";
+import {Pausable} from "../../../lib/openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title Automata PCCS Dao Storage
