@@ -97,10 +97,10 @@ deploy-and-configure: deploy-storage deploy-pcs deploy-pck deploy-id-dao deploy-
 	$(eval PCK_ADDR := $(shell cat deployment/AutomataPckDao))
 	$(eval ENCLAVE_ID_ADDR := $(shell cat deployment/AutomataEnclaveIdentityDao))
 	$(eval FMSPC_TCB_ADDR := $(shell cat deployment/AutomataFmspcTcbDao))
-	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCS_ADDR) --value 0 -k $(PRIVATE_KEY)
-	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCK_ADDR) --value 0 -k $(PRIVATE_KEY)
-	rex send $(STORAGE_ADDR) "grantDao(address)" $(ENCLAVE_ID_ADDR) --value 0 -k $(PRIVATE_KEY)
-	rex send $(STORAGE_ADDR) "grantDao(address)" $(FMSPC_TCB_ADDR) --value 0 -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCS_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCK_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(ENCLAVE_ID_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(FMSPC_TCB_ADDR) -k $(PRIVATE_KEY)
 
 deploy: deploy-and-configure
 
