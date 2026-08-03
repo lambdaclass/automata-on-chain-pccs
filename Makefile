@@ -5,11 +5,33 @@ SOLC_FLAGS := --overwrite --optimize --via-ir
 
 P256_ADDR := 0xc2b78104907F722DABAc4C69f826a522B2754De4
 
+# Pinned dependency revisions.
+#
+# lib/ is gitignored, so without these the deployed bytecode depends on whatever
+# the upstream default branches happen to be on the day `make deploy` runs. Both
+# libraries reach the compiled output (solady's LibString/JSONParserLib/LibBytes
+# and openzeppelin's Pausable/EnumerableSet), so an unpinned clone silently
+# changes what gets deployed.
+#
+# Keep each comment on its own line: Make preserves whitespace preceding an
+# inline `#`, which would be appended to the revision string.
+#
+# v5.7.0. Verified byte-identical to the master tip it replaces across all nine
+# compiled contracts.
+OPENZEPPELIN_REV = cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+# Untagged main tip as of 2026-08-03, pinned exactly because it is what this repo
+# has been building against. The v0.1.26 release does NOT produce identical
+# bytecode here, so moving to a tagged release is a deliberate change that needs
+# its own review rather than a drive-by bump.
+SOLADY_REV = c251232428b668a073293eb04c6c288b19ad5728
+
 lib/openzeppelin:
 	git clone https://github.com/OpenZeppelin/openzeppelin-contracts lib/openzeppelin
+	git -C lib/openzeppelin checkout --detach $(OPENZEPPELIN_REV)
 
 lib/solady:
 	git clone https://github.com/vectorized/solady lib/solady
+	git -C lib/solady checkout --detach $(SOLADY_REV)
 
 deps: lib/openzeppelin lib/solady
 	mkdir -p deployment
