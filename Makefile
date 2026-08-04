@@ -5,62 +5,56 @@ SOLC_FLAGS := --overwrite --optimize --via-ir
 
 P256_ADDR := 0xc2b78104907F722DABAc4C69f826a522B2754De4
 
-# Pinned dependency revisions.
-#
-# lib/ is gitignored, so without these the deployed bytecode depends on whatever
-# the upstream default branches happen to be on the day `make deploy` runs. Both
-# libraries reach the compiled output (solady's LibString/JSONParserLib/LibBytes
-# and openzeppelin's Pausable/EnumerableSet), so an unpinned clone silently
-# changes what gets deployed.
-#
-# Keep each comment on its own line: Make preserves whitespace preceding an
-# inline `#`, which would be appended to the revision string.
-#
-# v5.7.0. Verified byte-identical to the master tip it replaces across all nine
-# compiled contracts.
+# Pinned dependency revisions. lib/ is gitignored, so these are the only record
+# of what a deployment was built from. Both libraries reach the bytecode.
+# Comments stay off the value lines: Make keeps whitespace before an inline `#`.
+# openzeppelin v5.7.0; byte-identical to the master tip it replaced.
 OPENZEPPELIN_REV = cab19933c33c2ad1d4c7a84864a3601dddfd16f3
-# Untagged main tip as of 2026-08-03, pinned exactly because it is what this repo
-# has been building against. The v0.1.26 release does NOT produce identical
-# bytecode here, so moving to a tagged release is a deliberate change that needs
-# its own review rather than a drive-by bump.
+# solady main tip, 23 commits past v0.1.26. Bumping to v0.1.26 changes only the
+# metadata CBOR hash, not executable code, but is still a deliberate change.
 SOLADY_REV = c251232428b668a073293eb04c6c288b19ad5728
 
-lib/openzeppelin:
-	git clone https://github.com/OpenZeppelin/openzeppelin-contracts lib/openzeppelin
-	git -C lib/openzeppelin checkout --detach $(OPENZEPPELIN_REV)
+# Clone if absent, then re-assert and verify the pin on every run, so a stale or
+# half-checked-out lib/ is corrected rather than silently reused. After editing a
+# revision above, `make clean` to rebuild out/.
+define pin
+	@test -d $(1)/.git || git clone -q $(2) $(1)
+	@git -C $(1) cat-file -e "$(3)^{commit}" 2>/dev/null || git -C $(1) fetch -q --tags origin
+	@git -c advice.detachedHead=false -C $(1) checkout -q --detach $(3)
+	@test "$$(git -C $(1) rev-parse HEAD)" = "$(3)" || { echo "$(1): not at $(3)"; exit 1; }
+endef
 
-lib/solady:
-	git clone https://github.com/vectorized/solady lib/solady
-	git -C lib/solady checkout --detach $(SOLADY_REV)
-
-deps: lib/openzeppelin lib/solady
+.PHONY: deps
+deps:
 	mkdir -p deployment
+	$(call pin,lib/openzeppelin,https://github.com/OpenZeppelin/openzeppelin-contracts,$(OPENZEPPELIN_REV))
+	$(call pin,lib/solady,https://github.com/vectorized/solady,$(SOLADY_REV))
 
-out/AutomataDaoStorage.bin: deps
+out/AutomataDaoStorage.bin: | deps
 	solc src/automata_pccs/shared/AutomataDaoStorage.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/AutomataFmspcTcbDao.bin: deps
+out/AutomataFmspcTcbDao.bin: | deps
 	solc src/automata_pccs/AutomataFmspcTcbDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/AutomataEnclaveIdentityDao.bin: deps
+out/AutomataEnclaveIdentityDao.bin: | deps
 	solc src/automata_pccs/AutomataEnclaveIdentityDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/AutomataPcsDao.bin: deps
+out/AutomataPcsDao.bin: | deps
 	solc src/automata_pccs/AutomataPcsDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/AutomataPckDao.bin: deps
+out/AutomataPckDao.bin: | deps
 	solc src/automata_pccs/AutomataPckDao.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/EnclaveIdentityHelper.bin: deps
+out/EnclaveIdentityHelper.bin: | deps
 	solc src/helpers/EnclaveIdentityHelper.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/FmspcTcbHelper.bin: deps
+out/FmspcTcbHelper.bin: | deps
 	solc src/helpers/FmspcTcbHelper.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/PCKHelper.bin: deps
+out/PCKHelper.bin: | deps
 	solc src/helpers/PCKHelper.sol --bin -o out/ $(SOLC_FLAGS)
 
-out/X509CRLHelper.bin: deps
+out/X509CRLHelper.bin: | deps
 	solc src/helpers/X509CRLHelper.sol --bin -o out/ $(SOLC_FLAGS)
 
 deploy-helpers: out/EnclaveIdentityHelper.bin out/FmspcTcbHelper.bin out/PCKHelper.bin out/X509CRLHelper.bin
