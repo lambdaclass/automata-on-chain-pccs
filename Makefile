@@ -124,7 +124,15 @@ deploy-pck: out/AutomataPckDao.bin deploy-pcs
 		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
 		> deployment/AutomataPckDao
 
-deploy-tcb-eval-dao: out/AutomataTcbEvalDao.bin deploy-pcs
+# Must run before the DAOs below: their constructors read pcsDao() and crlHelper() off
+# the dependency config, so deploying them against an uninitialized config reverts.
+init-dependency-config: deploy-pcs
+	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	rex send $(DEPCONFIG_ADDR) "initialize(address,address)" $(PCS_ADDR) $(X509_CRL_ADDR) -k $(PRIVATE_KEY)
+
+deploy-tcb-eval-dao: out/AutomataTcbEvalDao.bin init-dependency-config
 	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
 	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
 	$(eval TCB_EVAL_HELPER_ADDR := $(shell cat deployment/TcbEvalHelper))
@@ -134,7 +142,7 @@ deploy-tcb-eval-dao: out/AutomataTcbEvalDao.bin deploy-pcs
 		$(STORAGE_ADDR) $(P256_ADDR) $(DEPCONFIG_ADDR) $(TCB_EVAL_HELPER_ADDR) $(X509_ADDR) $(OWNER) \
 		> deployment/AutomataTcbEvalDao
 
-deploy-id-dao: out/AutomataEnclaveIdentityDaoVersioned.bin deploy-pcs
+deploy-id-dao: out/AutomataEnclaveIdentityDaoVersioned.bin init-dependency-config
 	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
 	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
 	$(eval ENCLAVE_HELPER_ADDR := $(shell cat deployment/EnclaveIdentityHelper))
@@ -173,7 +181,6 @@ deploy-and-configure: deploy-pck deploy-tcb-eval-dao deploy-id-dao deploy-fmspc-
 	rex send $(STORAGE_ADDR) "grantDao(address)" $(TCB_EVAL_DAO_ADDR) -k $(PRIVATE_KEY)
 	rex send $(STORAGE_ADDR) "grantDao(address)" $(ENCLAVE_ID_ADDR) -k $(PRIVATE_KEY)
 	rex send $(STORAGE_ADDR) "grantDao(address)" $(FMSPC_TCB_ADDR) -k $(PRIVATE_KEY)
-	rex send $(DEPCONFIG_ADDR) "initialize(address,address)" $(PCS_ADDR) $(X509_CRL_ADDR) -k $(PRIVATE_KEY)
 
 deploy: deploy-and-configure
 
@@ -186,4 +193,4 @@ clean:
 		deployment/AutomataFmspcTcbDaoVersioned
 
 .PHONY: deploy deploy-helpers deploy-storage deploy-pcs deploy-pck deploy-tcb-eval-dao \
-	deploy-id-dao deploy-fmspc-tcb-dao deploy-and-configure clean
+	deploy-id-dao deploy-fmspc-tcb-dao init-dependency-config deploy-and-configure clean
