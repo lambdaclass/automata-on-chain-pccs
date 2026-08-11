@@ -1,237 +1,189 @@
-# Configuration
-VERIFIER ?= etherscan
-VERIFIER_URL ?=
-WITH_STORAGE ?= true
-SIMULATED ?=
-KEYSTORE_PATH ?= keystore/dcap_prod
-PRIVATE_KEY ?=
-UNLOCKED ?=
-GAS_LIMIT ?=
-GAS_BUFFER ?= 10
-SKIP_ESTIMATE ?=
+$(eval CHAIN_ID := $(shell rex chain-id))
+$(eval OWNER := $(shell rex address))
 
-# Reusable function to resolve DAO contract dependencies
-# Usage: $(call resolve_dao_deps)
-# Sets: P256_ADDR, X509_HELPER, CRL_HELPER, ENCLAVE_HELPER, FMSPC_HELPER, DUMMY
-define resolve_dao_deps
-	$(eval P256_ADDR := $(shell forge script script/utils/P256Configuration.sol:P256Configuration \
-		--rpc-url $(RPC_URL) --sig "simulateVerify()" -vv 2>/dev/null | awk '/P256Verifier address:/ { print $$NF; exit }'))
-	$(eval X509_HELPER := $(shell jq -r '.PCKHelper' deployment/$(CHAIN_ID).json))
-	$(eval CRL_HELPER := $(shell jq -r '.X509CRLHelper' deployment/$(CHAIN_ID).json))
-	$(eval ENCLAVE_HELPER := $(shell jq -r '.EnclaveIdentityHelper' deployment/$(CHAIN_ID).json))
-	$(eval FMSPC_HELPER := $(shell jq -r '.FmspcTcbHelper' deployment/$(CHAIN_ID).json))
-	$(eval DUMMY := 0x0000000000000000000000000000000000000001)
+SOLC_FLAGS := --overwrite --optimize --via-ir
+
+# src/ is kept byte-identical to upstream: imports resolve through these remappings
+# (the same ones upstream lists in remappings.txt) instead of being rewritten to
+# relative paths, so rebasing onto upstream touches no Solidity.
+SOLC_REMAP := solady/=lib/solady/src/ @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+SOLC := solc $(SOLC_FLAGS) $(SOLC_REMAP)
+
+# Deployed separately by the consumer (ethrex deploys it with the deterministic
+# deployer from assets/p256.hex) and passed to every DAO as the P256 verifier.
+P256_ADDR := 0xc2b78104907F722DABAc4C69f826a522B2754De4
+
+# TCB evaluation data number the versioned DAOs are deployed under. A quote verified
+# through the 1-argument verifyAndAttestOnChain resolves eval number 0 to whatever
+# TcbEvalDao reports as `standard`, and PCCSRouter then looks the versioned DAOs up by
+# that number, so this must match the standard number seeded into TcbEvalDao.
+TCB_EVAL_NUMBER ?= 19
+
+# Pinned dependency revisions. lib/ is gitignored, so these are the only record of
+# what a deployment was built from. Both libraries reach the bytecode.
+# Comments stay off the value lines: Make keeps whitespace before an inline `#`.
+# openzeppelin v5.7.0
+OPENZEPPELIN_REV = cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+# solady main tip, 23 commits past v0.1.26
+SOLADY_REV = c251232428b668a073293eb04c6c288b19ad5728
+
+# Clone if absent, then re-assert and verify the pin on every run, so a stale or
+# half-checked-out lib/ is corrected rather than silently reused. `make clean` removes
+# every pinned tree, for when a pin cannot be re-asserted in place.
+define pin
+	@test -d $(1)/.git || git clone -q $(2) $(1)
+	@git -C $(1) cat-file -e "$(3)^{commit}" 2>/dev/null || git -C $(1) fetch -q --tags origin
+	@git -c advice.detachedHead=false -C $(1) checkout -q --detach $(3)
+	@test "$$(git -C $(1) rev-parse HEAD)" = "$(3)" || { echo "$(1): not at $(3)"; exit 1; }
 endef
 
-# Constructor arg specs for gas estimation (using DUMMY for not-yet-deployed contracts)
-DAO_STORAGE_SPEC = AutomataDaoStorage:constructor(address):$(OWNER)
-PCS_DAO_SPEC = AutomataPcsDao:constructor(address,address,address,address):$(DUMMY),$(P256_ADDR),$(X509_HELPER),$(CRL_HELPER)
-PCK_DAO_SPEC = AutomataPckDao:constructor(address,address,address,address,address):$(DUMMY),$(P256_ADDR),$(DUMMY),$(X509_HELPER),$(CRL_HELPER)
+.PHONY: deps
+deps:
+	mkdir -p deployment
+	$(call pin,lib/openzeppelin-contracts,https://github.com/OpenZeppelin/openzeppelin-contracts,$(OPENZEPPELIN_REV))
+	$(call pin,lib/solady,https://github.com/vectorized/solady,$(SOLADY_REV))
 
-# Required environment variables check
-check_env:
-ifdef RPC_URL
-	$(eval CHAIN_ID := $(shell cast chain-id --rpc-url $(RPC_URL)))
-	@echo "Chain ID: $(CHAIN_ID)"
-else 
-	$(error RPC_URL is not set)
-endif
+# ---------------------------------------------------------------- compile
 
-# Get the Owner's Wallet Address from private key or keystore
-get_owner:
-ifdef UNLOCKED
-ifndef OWNER
-	$(error OWNER is not set. Please set OWNER when UNLOCKED=true)
-endif
-else
-ifdef PRIVATE_KEY
-	$(eval OWNER := $(shell cast wallet address --private-key $(PRIVATE_KEY)))
-else
-	$(eval KEYSTORE_PASSWORD := $(shell read -s -p "Enter keystore password: " pwd; echo $$pwd))
-	$(eval OWNER := $(shell cast wallet address --keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD) \
-		|| (echo "Improper wallet configuration"; exit 1)))
-endif
-endif
-	@echo "\nWallet Owner: $(OWNER)"
+out/PCKHelper.bin: | deps
+	$(SOLC) src/helpers/PCKHelper.sol --bin -o out/
 
-# Get the Owner's wallet address from env
-get_owner_env:
-ifdef OWNER
-	@echo "\nUsing Owner from environment: $(OWNER)"
-else
-	$(error OWNER is not set. Please set the OWNER environment variable.)
-endif
+out/X509CRLHelper.bin: | deps
+	$(SOLC) src/helpers/X509CRLHelper.sol --bin -o out/
 
-# Deployment targets
-deploy-helpers: check_env get_owner
-	@echo "Deploying helper contracts..."
-ifndef SKIP_ESTIMATE
-ifndef GAS_LIMIT
-	@echo "Estimating gas from network..."
-	@forge build > /dev/null 2>&1
-	$(eval GAS_LIMIT := $(shell ./script/estimate-gas-deploy.sh $(RPC_URL) $(GAS_BUFFER) \
-		EnclaveIdentityHelper FmspcTcbHelper FmspcTcbHelper PCKHelper X509CRLHelper TcbEvalHelper))
-	@echo "Estimated gas limit: $(GAS_LIMIT)"
-endif
-endif
-	@OWNER=$(OWNER) \
-		forge script script/helper/DeployHelpers.s.sol:DeployHelpers \
-		--rpc-url $(RPC_URL) \
-		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
-		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
-		$(if $(SIMULATED),, --broadcast --skip-simulation) \
-		$(if $(LEGACY), --legacy) \
-		-vv
-	@echo "Helper contracts deployed"
+out/EnclaveIdentityHelper.bin: | deps
+	$(SOLC) src/helpers/EnclaveIdentityHelper.sol --bin -o out/
 
-deploy-dao: check_env get_owner
-	@echo "Deploying DAO contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "Helper addresses not found. Run deploy-helpers first"; \
-		exit 1; \
-	fi
-ifndef SKIP_ESTIMATE
-ifndef GAS_LIMIT
-	@echo "Estimating gas from network..."
-	@forge build > /dev/null 2>&1
-	$(call resolve_dao_deps)
-	$(eval GAS_LIMIT := $(shell ./script/estimate-gas-deploy.sh $(RPC_URL) $(GAS_BUFFER) \
-		"$(DAO_STORAGE_SPEC)" "$(PCS_DAO_SPEC)" "$(PCK_DAO_SPEC)"))
-	@echo "Estimated gas limit: $(GAS_LIMIT)"
-endif
-endif
-	@OWNER=$(OWNER) \
-		forge script script/automata/DeployAutomataDao.s.sol:DeployAutomataDao \
-		--rpc-url $(RPC_URL) \
-		$(if $(UNLOCKED), --unlocked --sender $(OWNER), \
-		$(if $(PRIVATE_KEY), --private-key $(PRIVATE_KEY), \
-		--keystore $(KEYSTORE_PATH) --password $(KEYSTORE_PASSWORD))) \
-		$(if $(SIMULATED),, --broadcast --skip-simulation) \
-		$(if $(LEGACY), --legacy) \
-		-vv
-	@echo "DAO contracts deployed"
+out/FmspcTcbHelper.bin: | deps
+	$(SOLC) src/helpers/FmspcTcbHelper.sol --bin -o out/
 
-deploy-all: deploy-helpers deploy-dao
-	@echo "Deployment completed"
+out/TcbEvalHelper.bin: | deps
+	$(SOLC) src/helpers/TcbEvalHelper.sol --bin -o out/
 
-# Contract verification
-verify-helpers: check_env
-	@echo "Verifying helper contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "Helper addresses not found. Deploy helpers first."; \
-		exit 1; \
-	fi
-	@for contract in EnclaveIdentityHelper FmspcTcbHelper FmspcTcbHelperV2 PCKHelper X509CRLHelper TcbEvalHelper; do \
-		addr=$$(jq -r ".$$contract" deployment/$(CHAIN_ID).json); \
-		if [ "$$addr" != "null" ]; then \
-			if [ "$$contract" = "FmspcTcbHelperV2" ]; then \
-				contract_path="src/helpers/FmspcTcbHelper.sol:FmspcTcbHelper"; \
-			else \
-				contract_path="src/helpers/$$contract.sol:$$contract"; \
-			fi; \
-			forge verify-contract \
-				--rpc-url $(RPC_URL) \
-				--verifier $(VERIFIER) \
-				--watch \
-				$(if $(VERIFIER_URL),--verifier-url $(VERIFIER_URL)) \
-				$$addr \
-				$$contract_path || true; \
-		fi \
-	done
+out/AutomataDaoStorage.bin: | deps
+	$(SOLC) src/automata_pccs/shared/AutomataDaoStorage.sol --bin -o out/
 
-verify-dao: check_env get_owner_env
-	@echo "Verifying DAO contracts..."
-	@if [ ! -f deployment/$(CHAIN_ID).json ]; then \
-		echo "DAO addresses not found. Deploy DAOs first."; \
-		exit 1; \
-	fi
-	@echo "Determining P256 Verifier address..."
-	@P256_ADDRESS_VAL=$$(forge script script/utils/P256Configuration.sol:P256Configuration --rpc-url $(RPC_URL) --sig "simulateVerify()" -vv | awk '/P256Verifier address:/ { print $$NF; exit }'); \
-	echo "Using P256 Verifier address: $$P256_ADDRESS_VAL"; \
-	STORAGE_ADDR=$$(jq -r ".AutomataDaoStorage" deployment/$(CHAIN_ID).json); \
-	X509_HELPER_ADDR=$$(jq -r ".PCKHelper" deployment/$(CHAIN_ID).json); \
-	CRL_HELPER_ADDR=$$(jq -r ".X509CRLHelper" deployment/$(CHAIN_ID).json); \
-	PCS_DAO_ADDR=$$(jq -r ".AutomataPcsDao" deployment/$(CHAIN_ID).json); \
-	ENCLAVE_IDENTITY_HELPER_ADDR=$$(jq -r ".EnclaveIdentityHelper" deployment/$(CHAIN_ID).json); \
-	FMSPC_TCB_HELPER_ADDR=$$(jq -r ".FmspcTcbHelper" deployment/$(CHAIN_ID).json); \
-	for contract_name_loop in AutomataDaoStorage AutomataPcsDao AutomataPckDao AutomataEnclaveIdentityDao AutomataFmspcTcbDao; do \
-		contract_addr=$$(jq -r ".$$contract_name_loop" deployment/$(CHAIN_ID).json); \
-		current_encoded_args=""; \
-		current_contract_path_name=""; \
-		if [ "$$contract_addr" != "null" ]; then \
-			echo "Preparing to verify $$contract_name_loop at $$contract_addr..."; \
-			if [ "$$contract_name_loop" = "AutomataDaoStorage" ]; then \
-				current_encoded_args=$$(cast abi-encode "constructor(address)" $(OWNER)); \
-				current_contract_path_name="src/automata_pccs/shared/AutomataDaoStorage.sol:AutomataDaoStorage"; \
-			elif [ "$$contract_name_loop" = "AutomataPcsDao" ]; then \
-				current_encoded_args=$$(cast abi-encode "constructor(address,address,address,address)" $$STORAGE_ADDR $$P256_ADDRESS_VAL $$X509_HELPER_ADDR $$CRL_HELPER_ADDR); \
-				current_contract_path_name="src/automata_pccs/AutomataPcsDao.sol:AutomataPcsDao"; \
-			elif [ "$$contract_name_loop" = "AutomataPckDao" ]; then \
-				current_encoded_args=$$(cast abi-encode "constructor(address,address,address,address,address)" $$STORAGE_ADDR $$P256_ADDRESS_VAL $$PCS_DAO_ADDR $$X509_HELPER_ADDR $$CRL_HELPER_ADDR); \
-				current_contract_path_name="src/automata_pccs/AutomataPckDao.sol:AutomataPckDao"; \
-			elif [ "$$contract_name_loop" = "AutomataEnclaveIdentityDao" ]; then \
-				current_encoded_args=$$(cast abi-encode "constructor(address,address,address,address,address,address)" $$STORAGE_ADDR $$P256_ADDRESS_VAL $$PCS_DAO_ADDR $$ENCLAVE_IDENTITY_HELPER_ADDR $$X509_HELPER_ADDR $$CRL_HELPER_ADDR); \
-				current_contract_path_name="src/automata_pccs/AutomataEnclaveIdentityDao.sol:AutomataEnclaveIdentityDao"; \
-			elif [ "$$contract_name_loop" = "AutomataFmspcTcbDao" ]; then \
-				current_encoded_args=$$(cast abi-encode "constructor(address,address,address,address,address,address)" $$STORAGE_ADDR $$P256_ADDRESS_VAL $$PCS_DAO_ADDR $$FMSPC_TCB_HELPER_ADDR $$X509_HELPER_ADDR $$CRL_HELPER_ADDR); \
-				current_contract_path_name="src/automata_pccs/AutomataFmspcTcbDao.sol:AutomataFmspcTcbDao"; \
-			fi; \
-			echo "Verifying $$contract_name_loop with encoded args: $$current_encoded_args"; \
-			forge verify-contract \
-				--rpc-url $(RPC_URL) \
-				--verifier $(VERIFIER) \
-				--watch \
-				$(if $(VERIFIER_URL),--verifier-url $(VERIFIER_URL)) \
-				$$contract_addr \
-				$$current_contract_path_name \
-				--constructor-args $$current_encoded_args || true; \
-		fi; \
-	done
+out/PccsDependencyConfig.bin: | deps
+	$(SOLC) src/automata_pccs/shared/PccsDependencyConfig.sol --bin -o out/
 
-verify-all: verify-helpers verify-dao
-	@echo "Verification completed"
+out/AutomataPcsDao.bin: | deps
+	$(SOLC) src/automata_pccs/AutomataPcsDao.sol --bin -o out/
 
-# Utility targets
+out/AutomataPckDao.bin: | deps
+	$(SOLC) src/automata_pccs/AutomataPckDao.sol --bin -o out/
+
+out/AutomataTcbEvalDao.bin: | deps
+	$(SOLC) src/automata_pccs/AutomataTcbEvalDao.sol --bin -o out/
+
+out/AutomataEnclaveIdentityDaoVersioned.bin: | deps
+	$(SOLC) src/automata_pccs/versioned/AutomataEnclaveIdentityDaoVersioned.sol --bin -o out/
+
+out/AutomataFmspcTcbDaoVersioned.bin: | deps
+	$(SOLC) src/automata_pccs/versioned/AutomataFmspcTcbDaoVersioned.sol --bin -o out/
+
+.PHONY: build
+build: out/PCKHelper.bin out/X509CRLHelper.bin out/EnclaveIdentityHelper.bin \
+	out/FmspcTcbHelper.bin out/TcbEvalHelper.bin out/AutomataDaoStorage.bin \
+	out/PccsDependencyConfig.bin out/AutomataPcsDao.bin out/AutomataPckDao.bin \
+	out/AutomataTcbEvalDao.bin out/AutomataEnclaveIdentityDaoVersioned.bin \
+	out/AutomataFmspcTcbDaoVersioned.bin
+
+# ---------------------------------------------------------------- deploy
+# Each address is written to deployment/<ContractName>, which is the interface the
+# automata-dcap-attestation Makefile and ethrex's TDX deployer both read.
+
+deploy-helpers: out/PCKHelper.bin out/X509CRLHelper.bin out/EnclaveIdentityHelper.bin out/FmspcTcbHelper.bin out/TcbEvalHelper.bin
+	rex deploy --print-address $(shell cat out/PCKHelper.bin) 0 $(PRIVATE_KEY) > deployment/PCKHelper
+	rex deploy --print-address $(shell cat out/X509CRLHelper.bin) 0 $(PRIVATE_KEY) > deployment/X509CRLHelper
+	rex deploy --print-address $(shell cat out/EnclaveIdentityHelper.bin) 0 $(PRIVATE_KEY) > deployment/EnclaveIdentityHelper
+	rex deploy --print-address $(shell cat out/FmspcTcbHelper.bin) 0 $(PRIVATE_KEY) > deployment/FmspcTcbHelper
+	rex deploy --print-address $(shell cat out/TcbEvalHelper.bin) 0 $(PRIVATE_KEY) > deployment/TcbEvalHelper
+
+deploy-storage: out/AutomataDaoStorage.bin out/PccsDependencyConfig.bin deploy-helpers
+	rex deploy --print-address $(shell cat out/AutomataDaoStorage.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address)" $(OWNER) > deployment/AutomataDaoStorage
+	rex deploy --print-address $(shell cat out/PccsDependencyConfig.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address)" $(OWNER) > deployment/PccsDependencyConfig
+
+deploy-pcs: out/AutomataPcsDao.bin deploy-storage
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	rex deploy --print-address $(shell cat out/AutomataPcsDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataPcsDao
+
+deploy-pck: out/AutomataPckDao.bin deploy-pcs
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	rex deploy --print-address $(shell cat out/AutomataPckDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) \
+		> deployment/AutomataPckDao
+
+deploy-tcb-eval-dao: out/AutomataTcbEvalDao.bin deploy-pcs
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
+	$(eval TCB_EVAL_HELPER_ADDR := $(shell cat deployment/TcbEvalHelper))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	rex deploy --print-address $(shell cat out/AutomataTcbEvalDao.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address,address)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(DEPCONFIG_ADDR) $(TCB_EVAL_HELPER_ADDR) $(X509_ADDR) $(OWNER) \
+		> deployment/AutomataTcbEvalDao
+
+deploy-id-dao: out/AutomataEnclaveIdentityDaoVersioned.bin deploy-pcs
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
+	$(eval ENCLAVE_HELPER_ADDR := $(shell cat deployment/EnclaveIdentityHelper))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	rex deploy --print-address $(shell cat out/AutomataEnclaveIdentityDaoVersioned.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address,uint32)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(DEPCONFIG_ADDR) $(ENCLAVE_HELPER_ADDR) $(X509_ADDR) $(OWNER) $(TCB_EVAL_NUMBER) \
+		> deployment/AutomataEnclaveIdentityDao
+
+deploy-fmspc-tcb-dao: out/AutomataFmspcTcbDaoVersioned.bin deploy-pcs
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval FMSPC_HELPER_ADDR := $(shell cat deployment/FmspcTcbHelper))
+	$(eval X509_ADDR := $(shell cat deployment/PCKHelper))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	rex deploy --print-address $(shell cat out/AutomataFmspcTcbDaoVersioned.bin) 0 $(PRIVATE_KEY) -- \
+		"constructor(address,address,address,address,address,address,address,uint32)" \
+		$(STORAGE_ADDR) $(P256_ADDR) $(PCS_ADDR) $(FMSPC_HELPER_ADDR) $(X509_ADDR) $(X509_CRL_ADDR) $(OWNER) $(TCB_EVAL_NUMBER) \
+		> deployment/AutomataFmspcTcbDaoVersioned
+
+# The versioned identity DAO is written to deployment/AutomataEnclaveIdentityDao (the
+# name consumers already read) and the versioned TCB DAO additionally under the legacy
+# name, so a consumer written against the pre-versioned layout keeps resolving.
+deploy-and-configure: deploy-pck deploy-tcb-eval-dao deploy-id-dao deploy-fmspc-tcb-dao
+	cp deployment/AutomataFmspcTcbDaoVersioned deployment/AutomataFmspcTcbDao
+	$(eval STORAGE_ADDR := $(shell cat deployment/AutomataDaoStorage))
+	$(eval DEPCONFIG_ADDR := $(shell cat deployment/PccsDependencyConfig))
+	$(eval X509_CRL_ADDR := $(shell cat deployment/X509CRLHelper))
+	$(eval PCS_ADDR := $(shell cat deployment/AutomataPcsDao))
+	$(eval PCK_ADDR := $(shell cat deployment/AutomataPckDao))
+	$(eval TCB_EVAL_DAO_ADDR := $(shell cat deployment/AutomataTcbEvalDao))
+	$(eval ENCLAVE_ID_ADDR := $(shell cat deployment/AutomataEnclaveIdentityDao))
+	$(eval FMSPC_TCB_ADDR := $(shell cat deployment/AutomataFmspcTcbDaoVersioned))
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCS_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(PCK_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(TCB_EVAL_DAO_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(ENCLAVE_ID_ADDR) -k $(PRIVATE_KEY)
+	rex send $(STORAGE_ADDR) "grantDao(address)" $(FMSPC_TCB_ADDR) -k $(PRIVATE_KEY)
+	rex send $(DEPCONFIG_ADDR) "initialize(address,address)" $(PCS_ADDR) $(X509_CRL_ADDR) -k $(PRIVATE_KEY)
+
+deploy: deploy-and-configure
+
 clean:
-	forge clean
+	rm -rf out lib deployment/PCKHelper deployment/X509CRLHelper \
+		deployment/EnclaveIdentityHelper deployment/FmspcTcbHelper deployment/TcbEvalHelper \
+		deployment/AutomataDaoStorage deployment/PccsDependencyConfig \
+		deployment/AutomataPcsDao deployment/AutomataPckDao deployment/AutomataTcbEvalDao \
+		deployment/AutomataEnclaveIdentityDao deployment/AutomataFmspcTcbDao \
+		deployment/AutomataFmspcTcbDaoVersioned
 
-# Help target
-help:
-	@echo "Available targets:"
-	@echo "  deploy-helpers      Deploy helper contracts"
-	@echo "  deploy-dao          Deploy DAO contracts"
-	@echo "  deploy-all          Deploy all contracts"
-	@echo "  verify-helpers      Verify helper contracts"
-	@echo "  verify-dao          Verify DAO contracts"
-	@echo "  verify-all          Verify all contracts"
-	@echo "  clean               Remove build artifacts"
-	@echo ""
-	@echo "Wallet environment variables: (you only need to set one)"
-	@echo "  PRIVATE_KEY         Private key for wallet"
-	@echo "  KEYSTORE_PATH       Path to keystore directory"
-	@echo ""
-	@echo "Required environment variables:"
-	@echo "  RPC_URL             RPC URL for the target network"
-	@echo ""
-	@echo "Optional environment variables:"
-	@echo "  VERIFIER            Contract verifier (default: etherscan)"
-	@echo "  VERIFIER_URL        Custom verifier API URL"
-	@echo "  ETHERSCAN_API_KEY   API key for contract verification"
-	@echo "  WITH_STORAGE        Deploy with storage (default: true)"
-	@echo "  SIMULATED           Simulate deployment (default: false)"
-	@echo "  GAS_LIMIT           Manual gas limit override"
-	@echo "  GAS_BUFFER          Gas estimate buffer percentage (default: 20)"
-	@echo "  SKIP_ESTIMATE       Skip gas estimation, use GAS_LIMIT directly"
-	@echo ""
-	@echo "Example usage:"
-	@echo "  make deploy-all RPC_URL=xxx"
-	@echo "  make verify-all RPC_URL=xxx ETHERSCAN_API_KEY=xxx"
-	@echo "  make deploy-dao PRIVATE_KEY=xxx RPC_URL=xxx SIMULATED=true"
-	@echo ""
-	@echo "Gas estimation examples:"
-	@echo "  make deploy-helpers RPC_URL=xxx              # Auto-estimate gas from network"
-	@echo "  make deploy-helpers RPC_URL=xxx GAS_BUFFER=30  # Use 30% buffer instead of default 20%"
-	@echo "  make deploy-helpers RPC_URL=xxx GAS_LIMIT=5000000 SKIP_ESTIMATE=true  # Manual gas limit"
-
-.PHONY: check_env clean help deploy-% verify-%
+.PHONY: deploy deploy-helpers deploy-storage deploy-pcs deploy-pck deploy-tcb-eval-dao \
+	deploy-id-dao deploy-fmspc-tcb-dao deploy-and-configure clean
